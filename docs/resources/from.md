@@ -19,6 +19,7 @@ Derives a version string from a write-only input value. The `version` attribute 
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
+- `name` (String) A human-readable name for this resource.
 - `value` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) The input value. Write-only: never stored in state.
 
 ### Read-Only

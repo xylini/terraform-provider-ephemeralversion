@@ -3,10 +3,15 @@
 [![Tests](https://github.com/xylini/terraform-provider-ephemeralversion/actions/workflows/test.yml/badge.svg)](https://github.com/xylini/terraform-provider-ephemeralversion/actions/workflows/test.yml)
 [![Release](https://github.com/xylini/terraform-provider-ephemeralversion/actions/workflows/release.yml/badge.svg)](https://github.com/xylini/terraform-provider-ephemeralversion/actions/workflows/release.yml)
 
-A Terraform provider that exposes a single resource, `ephemeralversion_from`.
+A Terraform provider for deriving stable, deterministic version strings from secret values — without ever storing those secrets in state.
 
-Given a write-only `value`, the resource computes its MD5 hex digest and exposes it as the `version` attribute.  
-`value` is **never stored** in Terraform state.
+### Why does this exist?
+
+Terraform's [`ephemeral` variables](https://developer.hashicorp.com/terraform/language/values/variables#sensitive-values-in-variables) 
+are never persisted to state, which is great for secrets — but it also means Terraform has no way to detect when their value has changed between applies. 
+This provider solves that problem: it takes an ephemeral value and produces a **non-ephemeral `version` string** (the MD5 hex digest of the input) 
+that Terraform *can* track in state. When the secret rotates, the version changes, and any resources that depend on 
+it will be updated automatically — no secrets ever touch the state file.
 
 - **Registry:** [registry.terraform.io/providers/xylini/ephemeralversion](https://registry.terraform.io/providers/xylini/ephemeralversion)
 - **Source:** [github.com/xylini/terraform-provider-ephemeralversion](https://github.com/xylini/terraform-provider-ephemeralversion)
@@ -15,12 +20,14 @@ Given a write-only `value`, the resource computes its MD5 hex digest and exposes
 
 ## Requirements
 
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.11
-- [Go](https://golang.org/) >= 1.25 (for building from source)
+| Tool | Minimum version |
+|------|----------------|
+| [Terraform](https://developer.hashicorp.com/terraform/downloads) | 1.11 |
+| [Go](https://golang.org/) *(only for building from source)* | 1.25 |
 
 ---
 
-## Usage
+## Quick start
 
 ```hcl
 terraform {
@@ -34,14 +41,28 @@ terraform {
 
 provider "ephemeralversion" {}
 
+# Single secret → single version string
 resource "ephemeralversion_from" "app" {
-  provider = ephemeralversion
-  value    = var.secret_value   # write-only, never stored in state
+  name  = "db_password"
+  value = var.db_password   # write-only, never stored in state
 }
 
 output "app_version" {
   value = ephemeralversion_from.app.version
-  # => "fd93bfd1b5de7e5ee5e7e06f2ad28f7d"
+  # e.g. "fd93bfd1b5de7e5ee5e7e06f2ad28f7d"
+}
+
+# Multiple secrets → map of version strings
+resource "ephemeralversion_from_map" "secrets" {
+  values = {
+    db_password = var.db_password
+    api_key     = var.api_key
+  }
+}
+
+output "secret_versions" {
+  value = ephemeralversion_from_map.secrets.versions
+  # e.g. { db_password = "fd93...", api_key = "1a2b..." }
 }
 ```
 
@@ -49,39 +70,89 @@ See [`examples/basic`](examples/basic) for a complete working configuration.
 
 ---
 
-## Resource: `ephemeralversion_from`
+## Resources
 
-### Schema
+### `ephemeralversion_from`
+
+Computes an MD5 hex digest from a single secret string.
+
+#### Schema
 
 | Attribute | Type   | Required | Computed | Write-only | Description |
-|-----------|--------|----------|----------|------------|-------------|
-| `id`      | string |          | ✓        |            | UUID generated once on creation and never changed. |
-| `value`   | string | ✓        |          | ✓          | Input string. Never stored in state. |
-| `version` | string |          | ✓        |            | Lowercase MD5 hex digest of `value`. Recalculated on every apply. |
+|-----------|--------|:--------:|:--------:|:----------:|-------------|
+| `id`      | string |          | ✓        |            | UUID generated on creation, never changed. |
+| `name`    | string | ✓        |          |            | A human-readable name for this resource. Stored in state. |
+| `value`   | string | ✓        |          | ✓          | Secret input. Never stored in state. |
+| `version` | string |          | ✓        |            | MD5 hex digest of `value`. Recalculated on every apply. |
 
-### Behaviour notes
+#### Example
 
-- `value` uses `WriteOnly: true` (Terraform 1.11+), so it is accepted on write but cleared from state after apply.
-- `version` is recalculated on every apply by reading `value` from config during planning.
-- `id` is a UUID generated once on create and preserved across updates.
+```hcl
+resource "ephemeralversion_from" "app" {
+  name  = "db_password"
+  value = var.secret_value
+}
+
+output "version" {
+  value = ephemeralversion_from.app.version
+}
+```
 
 ---
 
-## Resource: `ephemeralversion_from_map`
+### `ephemeralversion_from_map`
 
-### Schema
+Computes MD5 hex digests for a map of secret strings. Useful when you have several secrets and want to track each one independently.
 
-| Attribute  | Type            | Required | Computed | Write-only | Description |
-|------------|-----------------|----------|----------|------------|-------------|
-| `id`       | string          |          | ✓        |            | UUID generated once on creation and never changed. |
-| `values`   | map(string)     | ✓        |          | ✓          | Map of secret names to values. Never stored in state. |
-| `versions` | map(string)     |          | ✓        |            | Map of secret names to MD5 hex digests. Recalculated on every apply. |
+> [!WARNING]
+> **Map keys are NOT secret.** The `versions` map (which mirrors the keys of `values`) is stored in Terraform state and visible in plan output. Always use a **non-sensitive name** as the key (e.g. `"db_password"`, `"api_key"`) and the **actual secret** as the value. If you accidentally put a secret as a key, it will be written to state in plain text and exposed in logs.
+>
+> ✅ **Correct**
+> ```hcl
+> values = {
+>   db_password = var.db_password   # key = name, value = secret
+>   api_key     = var.api_key
+> }
+> ```
+> ❌ **Dangerous — secret exposed in state**
+> ```hcl
+> values = {
+>   "${var.db_password}" = "some_label"   # key IS the secret — never do this
+> }
+> ```
 
-### Behaviour notes
+#### Schema
 
-- `values` uses `WriteOnly: true` (Terraform 1.11+), so it is accepted on write but cleared from state after apply.
-- `versions` is recalculated on every apply — each key maps to the MD5 hex digest of its value.
-- `id` is a UUID generated once on create and preserved across updates.
+| Attribute  | Type        | Required | Computed | Write-only | Description |
+|------------|-------------|:--------:|:--------:|:----------:|-------------|
+| `id`       | string      |          | ✓        |            | UUID generated on creation, never changed. |
+| `values`   | map(string) | ✓        |          | ✓          | Map of secret names to values. Never stored in state. |
+| `versions` | map(string) |          | ✓        |            | Map of secret names to MD5 hex digests. Recalculated on every apply. |
+
+#### Example
+
+```hcl
+resource "ephemeralversion_from_map" "secrets" {
+  values = {
+    db_password = var.db_password
+    api_key     = var.api_key
+  }
+}
+
+output "versions" {
+  value = ephemeralversion_from_map.secrets.versions
+}
+```
+
+---
+
+## How it works
+
+1. `value` / `values` are declared with `WriteOnly: true` (Terraform 1.11+). Terraform passes the value during apply but **never writes it to state**.
+2. During plan, the provider reads the config value and computes the MD5 digest, so Terraform can show you exactly what `version` will be before you apply.
+3. `id` is a UUID generated once on creation and preserved on every subsequent update.
+
+> **Why MD5?** MD5 is used purely as a fingerprinting mechanism — not for cryptographic security. It produces a short, stable, deterministic string that changes whenever the input changes.
 
 ---
 
@@ -89,37 +160,39 @@ See [`examples/basic`](examples/basic) for a complete working configuration.
 
 ### Build
 
-```bash
+```zsh
 go build -o terraform-provider-ephemeralversion .
 ```
 
-### Install binary for local Terraform use
+### Install for local Terraform use
 
-```bash
+```zsh
 PLUGIN_DIR=~/.terraform.d/plugins/registry.terraform.io/xylini/ephemeralversion/0.1.0/$(go env GOOS)_$(go env GOARCH)
 mkdir -p "$PLUGIN_DIR"
 cp terraform-provider-ephemeralversion "$PLUGIN_DIR/"
 ```
 
-### Run the example (dev overrides, no registry)
+### Run the example
 
-```bash
+The example uses `dev_overrides` so Terraform skips the registry lookup entirely.
+
+```zsh
 cd examples/basic
-export TF_CLI_CONFIG_FILE=./dev.tfrc      # uses dev_overrides, skips registry lookup
+export TF_CLI_CONFIG_FILE=./dev.tfrc
 TF_VAR_secret_value="hello" terraform apply -auto-approve
 ```
 
-### Run unit tests
+### Run tests
 
-```bash
+```zsh
 go test ./...
 ```
 
-### Regenerate provider docs
+### Regenerate docs
 
-Docs under [`docs/`](docs/) are generated by [tfplugindocs](https://github.com/hashicorp/terraform-plugin-docs) from the provider schema and the templates in [`templates/`](templates/). Re-run after any schema change:
+Docs in [`docs/`](docs/) are generated by [tfplugindocs](https://github.com/hashicorp/terraform-plugin-docs). Re-run this after any schema change:
 
-```bash
+```zsh
 go build -o terraform-provider-ephemeralversion .
 tfplugindocs generate \
   --provider-name "ephemeralversion" \
@@ -128,16 +201,14 @@ tfplugindocs generate \
 
 ---
 
-## Publishing a release
+## Releasing
 
-The release workflow is fully automated via [GoReleaser](https://goreleaser.com) and GitHub Actions.
+Releases are fully automated via [GoReleaser](https://goreleaser.com) and GitHub Actions. To cut a new release, tag and push:
 
-
-### Cutting a release
-
-```bash
+```zsh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The [`release.yml`](.github/workflows/release.yml) workflow triggers automatically, builds binaries for all platforms, signs the `SHA256SUMS` file with your GPG key, and creates a GitHub Release. The Terraform Registry picks up the release via a webhook within minutes.
+The [`release.yml`](.github/workflows/release.yml) workflow builds binaries for all platforms, signs the `SHA256SUMS` file with GPG key, and creates a GitHub Release. 
+The Terraform Registry picks up the release via webhook within minutes.

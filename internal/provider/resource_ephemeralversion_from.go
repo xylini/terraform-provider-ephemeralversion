@@ -27,6 +27,7 @@ func NewEphemeralVersionResource() resource.Resource {
 // "value" is write-only so it is never stored in state (kept as null after apply).
 type ephemeralVersionModel struct {
 	ID      types.String `tfsdk:"id"`
+	Name    types.String `tfsdk:"name"`
 	Value   types.String `tfsdk:"value"`
 	Version types.String `tfsdk:"version"`
 }
@@ -48,6 +49,10 @@ func (r *EphemeralVersionResource) Schema(_ context.Context, _ resource.SchemaRe
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"name": schema.StringAttribute{
+				Required:            true,
+				MarkdownDescription: "A human-readable name for this resource.",
 			},
 			"value": schema.StringAttribute{
 				Required:            true,

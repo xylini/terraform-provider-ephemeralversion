@@ -14,6 +14,7 @@ variable "secret_value" {
 
 resource "ephemeralversion_from" "single" {
   provider = ephemeralversion
+  name     = "db_password"
   value    = var.secret_value
 }
 
