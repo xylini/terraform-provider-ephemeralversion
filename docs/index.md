@@ -10,6 +10,12 @@ description: |-
 
 # ephemeralversion Provider
 
+The ephemeralversion provider derives stable, deterministic version strings from
+ephemeral (write-only) secret values without ever storing those secrets in Terraform state.
+It solves the problem of Terraform being unable to detect changes to ephemeral variables
+by producing a trackable MD5 version string that updates whenever the secret rotates,
+allowing dependent resources to be automatically updated without leaking secrets into state.
+
 Terraform's [ephemeral variables](https://developer.hashicorp.com/terraform/language/values/variables#sensitive-values-in-variables) 
 are never persisted to state or plan output, which makes them ideal
 for passing secrets. However, this creates a blind spot: because ephemeral values leave no
